@@ -7,6 +7,7 @@ from gru import ConvGRU
 class FrameSummarizer(nn.Module):
     '''
     egdes (relationships between frames) -> node features (profile for individual frame)
+    
     outputs better parameters
     '''
     def __init__(self, feature_dim=128, up_ratio=8, neigh_dim=3):
@@ -49,6 +50,7 @@ class UpdateModule(nn.Module):
     '''
     feature/motion history -> GRU -> prediction refiniment params (step size and mask)
 
+    
     use_graph_aggregation=True: smoothed, pixels pass information to each other before final prediction
     (aka they cna know if they are part of smae object)
     '''

@@ -1,7 +1,6 @@
 '''
-memory hub
+Central hub for memory, variables, tensors, flags, etc.
 '''
-
 import torch
 
 class StateBuffer():
@@ -12,17 +11,17 @@ class StateBuffer():
     '''
     def __init__(self, device='cpu', buffer=128, dsf=8, stereo=False):
         """
-        device: 'cpu' or 'cuda'
-        buffer: max keyframes holding
-        dsf: downsampling factor
-        stereo: false for monocular
+        Initializing states, flags, etc. What does NOT need allocation
         """
-        self.device = device
-        self.buffer = buffer
-        self.dsf    = dsf
-        self.stereo = stereo
+
+        self.device = device # 'cpu' or 'cuda'
+        self.buffer = buffer 
+        self.dsf    = dsf # downsampling factor
+        self.stereo = stereo # False for monocular
+
+        self.intrinsics = None # once set, should be constant
         
-        #tracking indices, k=raw, kf=keyframe
+        # TRACKING INDICES, k=raw, kf=keyframe ------------------------------------------------
         self.kf_idx      = 0 #index ptr to next empty slot in ring buffer
         self.last_kf_idx = 0 #most recent ACCEPTED keyframe index
         self.last_k      = None #most recent RAW frame index
@@ -30,46 +29,51 @@ class StateBuffer():
         self.kf_idx_to_f_idx = {} #keyframe->raw dict
         self.f_idx_to_kf_idx = {} #raw->keyframe dict
  
-        #state flags
+        # STATE FLAGS -----------------------------------------------------------------------
         self.is_initialized = False
         self.global_ba      = False
         self.stop           = False
         self.compute_covariances = True
  
-        # keyframe selection
+        # THRESHOLDS FOR KEYFRAME SELECTION ---------------------------------------------------
         self.motion_filter_thresh = 2.4   # min mean flow [px] to accept frame
         self.keyframe_thresh      = 4.0   # min BA-distance to keep keyframe
  
-        # graph
+        # GRAPH CONFIG --------------------------------------------------------------------
         self.max_age          = 25    # retire edges older than this
         self.max_factors      = 48    # max active edges 
         self.keyframe_warmup  = 8     # frames needed for first BA
         self.kf_init_count    = 8     # BA iters during initialization
  
-        # optimization window
+        # OPTIMIZATION WINDOW ---------------------------------------------------------------------------------------
         self.frontend_window  = 25    # keyframes in BA window that are adjusted
         self.frontend_radius  = 2     # make edges between keyframes with this dist (aka i connects i-1 and i-2)
         self.frontend_nms     = 1     # NMS suppression radius for proximity/redundant edges
         self.frontend_thresh  = 16.0  # max flow distance to add proximity edge, larger does not count as edge
         self.beta             = 0.3   # rotation/translation blend weight, i.e. how much sharp turn vs long straight movement weighs
 
-        # BA iterations
+        # BA ITERATION AMOUNTS ------------------------------------------------------------------------------------
         self.iters1 = 4   # GRU+BA iters before keyframe decision
         self.iters2 = 2   # GRU+BA iters after keyframe accepted (refining)
  
-        # uncertainty priors (used when IMU is added later)
+        # IMU UNCERTAINTY PRIORS -----------------------------------------------------------------------
         self.translation_sigma = 0.01   # [m]
         self.rotation_sigma    = 0.01   # [rad]
         self.sigma_idepth      = 0.1    # [1/m]
  
-        # correlation impl: "volume" (fast, more memory) or "alt" (slower, less memory)
+        # CORRELATION IMPLEMENTATION: "volume" (fast, more memory) or "alt" (slower, less memory) ------------------------
         self.corr_impl = "volume"
  
         self.ht = None   # feature height = H // dsf
         self.wd = None   # feature width  = W // dsf
         self.coords0 = None  # static pixel grid (ht, wd, 2), never changes
- 
+
+        # INIT END ---------------------------------------------------------------------------------------------------
+
     def allocate(self, image_size, coords_grid_fn, initial_pose=None):
+        """
+        Allocate tensors + etc. 
+        """
         H, W = image_size
         h, w = H // self.dsf, W // self.dsf
  
@@ -77,7 +81,7 @@ class StateBuffer():
         self.wd = w
         self.coords0 = coords_grid_fn(h, w, device=self.device)
  
-        # initial pose — identity by default
+        # INITAL POSE — identity by default
         if initial_pose is None:
             initial_pose = torch.tensor(
                 [0., 0., 0., 0., 0., 0., 1.],  # [tx,ty,tz, qx,qy,qz,qw]
@@ -85,7 +89,6 @@ class StateBuffer():
  
         cameras = 2 if self.stereo else 1
  
-        # raw sensor data, do NOT get modified
         self.cam0_timestamps = torch.zeros(
             self.buffer, dtype=torch.float, device=self.device)
  
@@ -96,44 +99,43 @@ class StateBuffer():
             self.buffer, 4, dtype=torch.float, device=self.device)
         # [fu/dsf, fv/dsf, cu/dsf, cv/dsf] — already divided by dsf at write time. focal lengths and principle points
  
+        # POSES: world-to-cam SE3 as quaternion [tx,ty,tz,qx,qy,qz,qw] -----------------------------------------------------------
         # initialized to identity, updated by BA on every iteration
-        # poses: world-to-cam SE3 as quaternion [tx,ty,tz,qx,qy,qz,qw]
-        self.cam0_T_world = torch.zeros(
+        self.cam0_poses = torch.zeros(
             self.buffer, 7, dtype=torch.float, device=self.device)
-        self.cam0_T_world[:] = initial_pose   # initialize all slots to starting pose
+        self.cam0_poses[:] = initial_pose   # initialize all slots to starting pose
  
-        # inverse depths at feature resolution: 1/depth [1/m]
+        # INVERSE DEPTHS at feature resolution: 1/depth [1/m] ---------------------------------------------------------
         # initialized to 1.0 (1 meter), updated by BA
         self.cam0_idepths = torch.ones(
             self.buffer, h, w, dtype=torch.float, device=self.device)
  
-        # depth uncertainty from BA information matrix (Eq. 9 in paper)
+        # DEPTH UNCERTAINTIES from BA information matrix (Eq. 9 in paper) ----------------------------------------------------
         self.cam0_idepths_cov = torch.ones(
             self.buffer, h, w, dtype=torch.float, device=self.device)
         self.cam0_depths_cov  = torch.ones(
             self.buffer, h, w, dtype=torch.float, device=self.device)
  
-        # upsampled (after BA), used for mapping
+        # UPSAMPLED DEPTHS (after BA), used for mapping ------------------------------------------------------------------
         self.cam0_idepths_up    = torch.zeros(
             self.buffer, H, W, dtype=torch.float, device=self.device)
         self.cam0_depths_cov_up = torch.ones(
             self.buffer, H, W, dtype=torch.float, device=self.device)
  
-        # written once by feature_net/context_net, never modified
-        # NOTE: torch.float for CPU (half unsupported); change to torch.half for GPU
+
+        # NETWORK FEATURES ---------------------------------------------------------------------------------------------
+        # NOTE: torch.float for CPU (torch.half is unsupported); change to torch.half for GPU
         self.features_imgs = torch.zeros( # feature maps, used for corr 
             self.buffer, cameras, 128, h, w,
             dtype=torch.float, device=self.device)
-        self.contexts_imgs = torch.zeros( #tanh(ctx[:128]) GRU hidden state init
+        self.contexts_imgs = torch.zeros( #tanh(ctx[:128]) GRU hidden state init (net)
             self.buffer, cameras, 128, h, w,
             dtype=torch.float, device=self.device)
         self.cst_contexts_imgs = torch.zeros( #relu(ctx[128:]) constant GRU input (inp)
             self.buffer, cameras, 128, h, w,
             dtype=torch.float, device=self.device)
  
-        #track how pixels shift in space from one frame view to another
-        self.correlation_volumes = None
- 
+        # GRU STATE (grows as edges are added) ------------------------------------------------------------------------------
         # shape when non-empty: (1, E, 128, h, w)
         self.gru_hidden_states = None
  
@@ -155,6 +157,8 @@ class StateBuffer():
         self.damping = 1e-6 * torch.ones(
             self.buffer, h, w, dtype=torch.float, device=self.device)
  
+
+        # FACTOR GRAPH ---------------------------------------------------------------------------
         # i[e]: source keyframe index of edge e
         # j[e]: target keyframe index of edge e
         # age[e]: how many BA iterations this edge has survived, remove once too old
@@ -177,7 +181,9 @@ class StateBuffer():
         self.viz_idx = torch.zeros(
             self.buffer, dtype=torch.bool, device=self.device)
         
+        # ALLOCATE END ------------------------------------------------------------------------------------
         
+    # HELPERS 
     @property
     def num_edges(self):
         return self.i.shape[0]
@@ -186,12 +192,26 @@ class StateBuffer():
     def is_allocated(self):
         return self.coords0 is not None
  
-    def active_keyframes(self):
+    def get_active_keyframes(self):
         return torch.unique(self.i)
  
-    def poses(self):
+    def get_poses(self):
         import lietorch
-        return lietorch.SE3(self.cam0_T_world[None])  # (1, buffer, 7)
+        return lietorch.SE3(self.cam0_poses[None])  # (1, buffer, 7)
  
-    def idepths(self):
+    def get_idepths(self):
         return self.cam0_idepths[None]                # (1, buffer, 
+    
+    def append(self, tstamp, image, pose, invdepth, fmap, net, inp):
+        idx = self.kf_idx
+
+        self.cam0_timestamps[idx] = tstamp
+        self.cam0_images[idx] = image
+        self.cam0_poses[idx] = pose if pose is not None else self.cam0_poses[max(0, idx-1)]
+        self.cam0_idepths[idx] = invdepth if invdepth is not None else 1.0
+        self.cam0_intrinsics[idx] = self.intrinsics / self.dsf
+        self.features_imgs[idx] = fmap
+        self.contexts_imgs[idx] = net
+        self.cst_contexts_imgs[idx] = inp
+
+        self.kf_idx += 1

@@ -1,3 +1,10 @@
+'''
+fnet and cnet
+
+fnet: multidim = False
+cnet: mulidim = True
+'''
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

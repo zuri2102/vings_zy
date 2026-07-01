@@ -86,14 +86,14 @@ def BA(target, weight, damp_factor, poses, invdepth, intrinsics, i, j, frame_off
     )
 
     E = (
-        safe_scatter_sum_vec(E_i, i, kk, P, M) + 
-        safe_scatter_sum_vec(E_j, j, kk, P, M)
+        safe_scatter_sum_mat(E_i, i, kk, P, M) + 
+        safe_scatter_sum_mat(E_j, j, kk, P, M)
     )
 
-    v = {
+    v = (
         safe_scatter_sum_vec(vi, i, P) + 
         safe_scatter_sum_vec(vj, j, P)
-    }
+    )
 
     C = safe_scatter_sum_vec(Ck, kk, M)
     W = safe_scatter_sum_vec(wk, kk, M)

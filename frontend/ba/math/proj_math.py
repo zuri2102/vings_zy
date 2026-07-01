@@ -18,6 +18,14 @@ def extract_intrinsics(intrinsics):
 
     return fx, fy, cx, cy
 
+def coords_grid(h, w, **kwargs):
+    y, x = torch.meshgrid(
+        torch.arange(h).to(**kwargs).float(),
+        torch.arange(w).to(**kwargs).float())
+
+    return torch.stack([x, y], dim=-1)
+
+
 def iproj(invdepth, intrinsics, jacobian=False):
     '''
     inverse projection, image to 3d point cloud 

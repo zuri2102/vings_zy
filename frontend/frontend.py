@@ -1,15 +1,43 @@
+'''
+loop start 
+
+rgb frame -> motion filter:
+- run extractor, for feature map at low res: fnet
+- put into corr, calculate corr between this frame and prev feature maps
+- decide whether or not to toss (thresholding, if too small of a difference)--------------------------------------> if drop, next iteration
+
+want to extract featrues and learn about scene now: cnet
+cnet hidden state + feature desciription -> state buffer, now contains the new keyframe's information
+
+graph:
+- find keyframes that saw the same part of the scene (by camera distance)
+- build correlation volumes for each new edge
+
+if IMU available:
+- integrate IMU measurements since last keyframe -> starting pose guess
+
+update loop (runs multiple iterations):
+- reproject pixels using current pose guesses
+- sample correlation volumes at reprojection locations
+- GRU: compare reprojection vs reality -> output delta + weight
+- BA: solve for pose + depth corrections that explain all deltas across all edges simultaneously
+- update poses + depths in state buffer
+
+loop end
+'''
+
 import torch
 import torch.nn as nn
-from bundle_adj import safe_scatter_sum_mat
+from ba.bundle_adj import safe_scatter_sum_mat
 from state_buffer import StateBuffer
-from update import UpdateModule
-from extractor import BasicEncoder
+from nn.update.update import UpdateModule
+from nn.extractor import BasicEncoder
 
 class VIOFrontend(nn.Module):
     def __init__(self, cfg, device='cpu'):
         super().__init__()
-        self.cfg = self.cfg
-        self.device = self.device
+        self.cfg = cfg
+        self.device = device
 
         self.state = StateBuffer(device=device,
                                  buffer=cfg['frontend'].get('buffer', 128),
@@ -24,7 +52,7 @@ class VIOFrontend(nn.Module):
         self.update_net = UpdateModule()
 
         #load weights
-        weights = self.load_weights(cfg['frontend']['weight']) #change depending on load method
+        weights = self.load_weights(cfg['frontend']['weight']) #change depending on load methodNA
         self.load_state_dict(weights)
         self.to(device)
         self.eval()

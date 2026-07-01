@@ -25,7 +25,11 @@ class CorrLayer(torch.autograd.Function):
 class AltCorrBlock:
     '''
     better bc computes only when necessary--saves raw, checks within radius
-    have 2 fmaps: i and j, before adn after
+    
+    
+    @arg fmaps : takes in 2, i and j, before and after
+
+    @arg num_levels : indicates how much downsize by
     '''
     def __init__(self, fmaps, num_levels=4, radius = 3): #num_levels -> downsample by 2^3
         self.num_levels = num_levels
@@ -40,9 +44,13 @@ class AltCorrBlock:
             fmaps = F.avg_pool2d(fmaps, 2, stride=2) #blur and shrink
     
     def corr_fn(self, coords, i, j):
-        '''
+        """
+        Corr math
+
+        i is before index, j is after index
+
         each level holds correlation of before and after, before always being high res, and after being increasingly less blurry
-        '''
+        """
         B, N, H, W, S, _ = coords.shape #S = sample?
         coords = coords.permute(0, 1, 4, 2, 3, 5)
 
@@ -64,6 +72,9 @@ class AltCorrBlock:
         return corr
     
     def __call__(self, coords, i, j):
+        """
+        Runs correlation
+        """
         squeeze_output = False
         if len(coords.shape) == 5: #if B, N, H, W, 2, aka no S->only one hypotheses
             coords = coords.unsqueeze(dim=-2)
